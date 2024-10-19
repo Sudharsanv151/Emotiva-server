@@ -6,8 +6,8 @@ app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests for React frontend
 
 # Load the Hugging Face sentiment analysis pipeline
-sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
-
+# sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+sentiment_pipeline = pipeline("text-classification", model="michellejieli/emotion_text_classifier")
 @app.route('/api/recommendations', methods=['POST'])
 def get_recommendations():
     data = request.json
