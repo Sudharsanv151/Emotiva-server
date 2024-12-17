@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 import os
 import bcrypt
 from bson import ObjectId
+import pandas as pd
+import pickle
+from sklearn.preprocessing import LabelEncoder
 
 load_dotenv()
 
@@ -15,6 +18,14 @@ client = MongoClient(os.getenv("MONGO_URI"))
 db = client["Emotiva"]
 users_collection = db["users"]
 journals_collection = db["journals"]
+recommendations_collection = db["recomm"]
+
+
+with open("encoders_xgb.pkl", "rb") as f:
+    encoders = pickle.load(f)
+
+with open("xgb_model.pkl", "rb") as f:
+    model = pickle.load(f)
 
 @app.route('/user/register', methods=['POST'])
 def register():
@@ -49,6 +60,34 @@ def signin():
         "email": email
     }), 200
 
+@app.route('/user/update/<email>', methods=['PUT'])
+def update_profile(email):
+    data = request.get_json()
+
+    try:
+        update_data = {}
+        if "name" in data:
+            update_data["name"] = data["name"]
+        if "phone" in data:
+            update_data["phone"] = data["phone"]
+        if "address" in data:
+            update_data["address"] = data["address"]
+        if "bio" in data:
+            update_data["bio"] = data["bio"]
+
+        result = users_collection.update_one(
+            {"email": email},
+            {"$set": update_data}
+        )
+
+        if result.matched_count > 0:
+            return jsonify({"message": "Profile updated successfully"}), 200
+        else:
+            return jsonify({"message": "User not found"}), 404
+
+    except Exception as e:
+        return jsonify({"message": f"Error updating profile: {str(e)}"}), 500
+
 @app.route('/journals/add', methods=['POST'])
 def add_journal():
     data = request.get_json()
@@ -56,9 +95,8 @@ def add_journal():
     if 'email' not in data:
         return jsonify({"message": "Email is required"}), 400
 
-    email = data["email"]
     journal = {
-        "email": email,
+        "email": data["email"],
         "title": data["title"],
         "content": data["content"],
         "timestamp": data["timestamp"]
@@ -111,5 +149,78 @@ def update_journal(journal_id):
     except Exception as e:
         return jsonify({"message": f"Error updating journal: {str(e)}"}), 500
 
-if __name__ == '__main__':
+
+@app.route('/recommend', methods=['POST'])
+def recommend():
+    data = request.get_json()
+    print("Received data:", data)
+    
+
+    emotion = data["emotion"]
+    intensity = data["intensity"]
+    social_interaction = data["socialInteraction"]
+    productivity = data["productivity"]
+    overwhelmed = data["overwhelmed"]
+
+    try:
+        input_data = {
+            "emotion": encoders["emotion"].transform([emotion])[0],
+            "intensity": int(intensity),
+            "socialInteraction": encoders["socialInteraction"].transform([social_interaction])[0],
+            "productivity": encoders["productivity"].transform([productivity])[0],
+            "overwhelmed": encoders["overwhelmed"].transform([overwhelmed])[0],
+        }
+
+        input_df = pd.DataFrame([input_data])
+
+        prediction = model.predict(input_df)[0]
+
+        recommended_rid = encoders["RId"].inverse_transform([prediction])[0]
+        print("Recommended RID:", recommended_rid)
+
+        recommendation = recommendations_collection.find_one({"_id": recommended_rid})
+        
+        if recommendation:
+            
+            content = recommendation.get("content", [])
+            result = []
+
+            for item in content:
+                if item["type"] == "iframe":
+                    result.append({
+                        "type": "iframe",
+                        "content": item["content"],
+                        "url": item["url"],
+                        "height": item["height"]
+                    })
+                    print("Iframe content:", item["content"])
+                    print("Iframe URL:", item["url"])
+                elif item["type"] == "image":
+                    result.append({
+                        "type": "image",
+                        "content": item["content"],
+                        "imageUrl": item["imageUrl"],
+                        "altText": item["altText"]
+                    })
+                    print("Image content:", item["content"])
+                    print("Image URL:", item["imageUrl"])
+                elif item["type"] == "spotify":
+                    result.append({
+                        "type": "spotify",
+                        "content": item["content"],
+                        "url": item["url"]
+                    })
+                    print("Spotify content:", item["content"])
+                    print("Spotify URL:", item["url"])
+            
+            return jsonify({"recommended_RId": recommended_rid, "content": result}), 200
+        else:
+            return jsonify({"message": "Recommendation not found for the given RId"}), 404
+
+    except Exception as e:
+        return jsonify({"message": f"Error during recommendation: {str(e)}"}), 500
+
+
+if __name__ == "__main__":
     app.run(debug=True)
+
